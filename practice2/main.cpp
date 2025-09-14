@@ -12,6 +12,7 @@
 #include <iostream>
 #include <chrono>
 #include <unordered_map>
+#include <cmath>
 
 std::string to_string(std::string_view str)
 {
@@ -31,24 +32,45 @@ void glew_fail(std::string_view message, GLenum error)
 const char vertex_shader_source[] =
 R"(#version 330 core
 
-const vec2 VERTICES[3] = vec2[3](
-    vec2(0.0, 1.0),
-    vec2(-sqrt(0.75), -0.5),
-    vec2( sqrt(0.75), -0.5)
+// uniform float scale;
+// uniform float angle;
+uniform mat4 transform;
+uniform mat4 view;
+
+const vec2 VERTICES[8] = vec2[8](
+    vec2(0.0, 0.0),
+    vec2(-0.5, -sqrt(3)/2),
+    vec2(0.5, -sqrt(3)/2),
+    vec2(1.0, 0.0),
+    vec2(0.5, sqrt(3)/2),
+    vec2(-0.5, sqrt(3)/2),
+    vec2(-1.0, 0.0),
+    vec2(-0.5, -sqrt(3)/2)
 );
 
-const vec3 COLORS[3] = vec3[3](
+const vec3 COLORS[8] = vec3[8](
+    vec3(0.5, 0.5, 0.5),
     vec3(1.0, 0.0, 0.0),
+    vec3(1.0, 1.0, 0.0),
+    vec3(1.0, 0.0, 1.0),
     vec3(0.0, 1.0, 0.0),
-    vec3(0.0, 0.0, 1.0)
+    vec3(0.0, 1.0, 1.0),
+    vec3(0.0, 0.0, 1.0),
+    vec3(1.0, 0.0, 0.0)
 );
 
 out vec3 color;
 
 void main()
 {
+    // vec2 position = VERTICES[gl_VertexID] * scale;
     vec2 position = VERTICES[gl_VertexID];
-    gl_Position = vec4(position, 0.0, 1.0);
+
+    // float c = cos(angle);
+    // float s = sin(angle);
+    // position = mat2(c, -s, s, c) * position;
+
+    gl_Position = view * transform * vec4(position, 0.0, 1.0);
     color = COLORS[gl_VertexID];
 }
 )";
@@ -131,6 +153,9 @@ int main() try
     if (!gl_context)
         sdl2_fail("SDL_GL_CreateContext: ");
 
+    if (SDL_GL_SetSwapInterval(0) != 0)
+        std::cerr << "Can't disable VSync: " << SDL_GetError() << "\n";
+
     if (auto result = glewInit(); result != GLEW_NO_ERROR)
         glew_fail("glewInit: ", result);
 
@@ -146,6 +171,30 @@ int main() try
 
     GLuint vao;
     glGenVertexArrays(1, &vao);
+
+    glUseProgram(program);
+
+    // GLint scale_loc = glGetUniformLocation(program, "scale");
+    // GLint angle_loc = glGetUniformLocation(program, "angle");
+
+    // if (scale_loc == -1) std::cerr << "uniform scale not found\n";
+    // if (angle_loc == -1) std::cerr << "uniform angle not found\n";
+
+    // glUniform1f(scale_loc, 0.5f);
+
+    GLint transform_loc = glGetUniformLocation(program, "transform");
+    GLint view_loc = glGetUniformLocation(program, "view");
+
+    if (transform_loc == -1) std::cerr << "uniform transform not found\n";
+    if(view_loc == -1) std::cerr << "uniform view not found\n";
+
+    const float FIXED_DT = 0.016f;
+    float time = 0.f;
+    const float scale = 0.5f;
+
+    float x = 0, y = 0;
+    float dt = FIXED_DT;
+    float speed = 15;
 
     std::unordered_map<SDL_Keycode, bool> key_down;
 
@@ -170,6 +219,19 @@ int main() try
             break;
         case SDL_KEYDOWN:
             key_down[event.key.keysym.sym] = true;
+
+            if (key_down[SDLK_LEFT]) {
+                x -= speed * dt;
+            }
+            if (key_down[SDLK_RIGHT]) {
+                x += speed * dt;
+            }
+            if (key_down[SDLK_UP]) {
+                y += speed * dt;
+            }
+            if (key_down[SDLK_DOWN]) {
+                y -= speed * dt;
+            }
             break;
         case SDL_KEYUP:
             key_down[event.key.keysym.sym] = false;
@@ -183,11 +245,42 @@ int main() try
         float dt = std::chrono::duration_cast<std::chrono::duration<float>>(now - last_frame_start).count();
         last_frame_start = now;
 
+        // std::cout << "dt = " << dt << "  (fps ≈ " << (dt > 0 ? 1.0f / dt : 0.0f) << ")\n";
+
+        // dt = FIXED_DT;
+
+        time += dt;
+
+        float c = std::cos(time);
+        float s = std::sin(time);
+        // x = 0.45f * std::cos(time * 0.8f);
+        // y = 0.45f * std::sin(time * 0.8f);
+
+        float transform[16] = {
+            scale*c, -scale*s, 0.0f, x,
+            scale*s, scale*c,  0.0f, y,
+            0.0f,    0.0f,     1.0f, 0.0f,
+            0.0f,    0.0f,     0.0f, 1.0f
+        };
+
+        float aspect_ratio = static_cast<float>(width) / static_cast<float>(height);
+
+        float view[16] =
+        {
+            1.0f / aspect_ratio, 0, 0, 0,
+            0,                   1, 0, 0,
+            0,                   0, 1, 0,
+            0,                   0, 0, 1,
+        };
+
         glClear(GL_COLOR_BUFFER_BIT);
 
         glUseProgram(program);
+        // glUniform1f(angle_loc, time);
+        glUniformMatrix4fv(transform_loc, 1, GL_TRUE, transform);
+        glUniformMatrix4fv(view_loc, 1, GL_TRUE, view);
         glBindVertexArray(vao);
-        glDrawArrays(GL_TRIANGLES, 0, 3);
+        glDrawArrays(GL_TRIANGLE_FAN , 0, 8);
 
         SDL_GL_SwapWindow(window);
     }

@@ -193,8 +193,6 @@ int main() try
     const float scale = 0.5f;
 
     float x = 0, y = 0;
-    float dt = FIXED_DT;
-    float speed = 15;
 
     std::unordered_map<SDL_Keycode, bool> key_down;
 
@@ -219,19 +217,6 @@ int main() try
             break;
         case SDL_KEYDOWN:
             key_down[event.key.keysym.sym] = true;
-
-            if (key_down[SDLK_LEFT]) {
-                x -= speed * dt;
-            }
-            if (key_down[SDLK_RIGHT]) {
-                x += speed * dt;
-            }
-            if (key_down[SDLK_UP]) {
-                y += speed * dt;
-            }
-            if (key_down[SDLK_DOWN]) {
-                y -= speed * dt;
-            }
             break;
         case SDL_KEYUP:
             key_down[event.key.keysym.sym] = false;
@@ -250,6 +235,16 @@ int main() try
         // dt = FIXED_DT;
 
         time += dt;
+
+        float xx = 0.f, yy = 0.f;
+        if (key_down[SDLK_LEFT]) xx -= 1.f;
+        if (key_down[SDLK_RIGHT]) xx += 1.f;
+        if (key_down[SDLK_UP]) yy += 1.f;
+        if (key_down[SDLK_DOWN]) yy -= 1.f;
+
+        const float speed = 2;
+        x += xx * speed * dt;
+        y += yy * speed * dt;
 
         float c = std::cos(time);
         float s = std::sin(time);

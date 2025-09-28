@@ -158,6 +158,9 @@ int main() try
         throw std::runtime_error("OpenGL 3.3 is not supported");
 
     glClearColor(0.1f, 0.1f, 0.2f, 0.f);
+    glEnable(GL_DEPTH_TEST);
+    glEnable(GL_CULL_FACE);
+    glCullFace(GL_FRONT);
 
     auto vertex_shader = create_shader(GL_VERTEX_SHADER, vertex_shader_source);
     auto fragment_shader = create_shader(GL_FRAGMENT_SHADER, fragment_shader_source);
@@ -170,9 +173,45 @@ int main() try
     std::string project_root = PROJECT_ROOT;
     obj_data bunny = parse_obj(project_root + "/bunny.obj");
 
+    GLuint vao = 0, vbo = 0, ebo = 0;
+    glGenVertexArrays(1, &vao);
+    glGenBuffers(1, &vbo);
+    glGenBuffers(1, &ebo);
+
+    glBindVertexArray(vao);
+
+    glBindBuffer(GL_ARRAY_BUFFER, vbo);
+    glBufferData(GL_ARRAY_BUFFER,
+                bunny.vertices.size() * sizeof(obj_data::vertex),
+                bunny.vertices.data(),
+                GL_STATIC_DRAW);
+
+    glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, ebo);
+    glBufferData(GL_ELEMENT_ARRAY_BUFFER,
+                bunny.indices.size() * sizeof(std::uint32_t),
+                bunny.indices.data(),
+                GL_STATIC_DRAW);
+
+    constexpr GLsizei stride = sizeof(obj_data::vertex);
+    const void* pos_off = reinterpret_cast<void*>(offsetof(obj_data::vertex, position));
+    const void* norm_off = reinterpret_cast<void*>(offsetof(obj_data::vertex, normal));
+
+    glEnableVertexAttribArray(0);
+    glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, stride, pos_off);
+
+    glEnableVertexAttribArray(1);
+    glVertexAttribPointer(1, 3, GL_FLOAT, GL_FALSE, stride, norm_off);
+
+    glBindVertexArray(0);
+
     auto last_frame_start = std::chrono::high_resolution_clock::now();
 
     float time = 0.f;
+
+    float bunny1_x = -2.0f, bunny1_y = 0.0f;
+    float bunny2_x =  0.0f, bunny2_y = 0.0f;
+    float bunny3_x =  2.0f, bunny3_y = 0.0f;
+    float speed = 2.f;
 
     std::map<SDL_Keycode, bool> button_down;
 
@@ -209,36 +248,103 @@ int main() try
         last_frame_start = now;
         time += dt;
 
-        glClear(GL_COLOR_BUFFER_BIT);
+        if (button_down[SDLK_LEFT])  {
+            bunny1_x -= speed * dt;
+            bunny2_x -= speed * dt;
+            bunny3_x -= speed * dt;
+        }
+        if (button_down[SDLK_RIGHT]) {
+            bunny1_x += speed * dt;
+            bunny2_x += speed * dt;
+            bunny3_x += speed * dt;
+        }
+        if (button_down[SDLK_DOWN])  {
+            bunny1_y -= speed * dt;
+            bunny2_y -= speed * dt;
+            bunny3_y -= speed * dt;
+        }
+        if (button_down[SDLK_UP])    {
+            bunny1_y += speed * dt;
+            bunny2_y += speed * dt;
+            bunny3_y += speed * dt;
+        }
 
-        float model[16] =
+        glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
+
+        float angle = time;
+        float c = std::cos(angle);
+        float s = std::sin(angle);
+        float scale = 0.5f;
+
+        float model1[16] =
         {
-            1.f, 0.f, 0.f, 0.f,
-            0.f, 1.f, 0.f, 0.f,
-            0.f, 0.f, 1.f, 0.f,
-            0.f, 0.f, 0.f, 1.f,
+            scale*c, -scale*s, 0.f,   bunny1_x,
+            scale*s, scale*c,  0.f,   bunny1_y,
+            0.f,     0.f,      scale, 0.f,
+            0.f,     0.f,      0.f,   1.f,
+        };
+
+        float model2[16] =
+        {
+            scale*c,  0.f,   -scale*s, bunny2_x,
+            0.f,      scale, 0.f,      bunny2_y,
+            scale*s,  0.f,   scale*c,  0.f,
+            0.f,      0.f,   0.f,      1.f,
+        };
+
+        float model3[16] =
+        {
+            scale,  0.f,     0.f,      bunny3_x,
+            0.f,    scale*c, -scale*s, bunny3_y,
+            0.f,    scale*s, scale*c,  0.f,
+            0.f,    0.f,     0.f,      1.f,
         };
 
         float view[16] =
         {
             1.f, 0.f, 0.f, 0.f,
             0.f, 1.f, 0.f, 0.f,
-            0.f, 0.f, 1.f, 0.f,
+            0.f, 0.f, 1.f, -3.f,
             0.f, 0.f, 0.f, 1.f,
         };
+
+        float near = 0.1f;
+        float far = 100.0f;
+        float aspect =(float)width / (float)height;
+        float right = near;
+        float top = right / aspect;
 
         float projection[16] =
         {
-            1.f, 0.f, 0.f, 0.f,
-            0.f, 1.f, 0.f, 0.f,
-            0.f, 0.f, 1.f, 0.f,
-            0.f, 0.f, 0.f, 1.f,
+            near/right, 0.f, 0.f, 0.f,
+            0.f, near/top, 0.f, 0.f,
+            0.f, 0.f, (far+near)/(near-far), (2.f*far*near)/(near-far),
+            0.f, 0.f, -1.f, 0.f,
         };
 
         glUseProgram(program);
-        glUniformMatrix4fv(model_location, 1, GL_TRUE, model);
         glUniformMatrix4fv(view_location, 1, GL_TRUE, view);
         glUniformMatrix4fv(projection_location, 1, GL_TRUE, projection);
+
+        glBindVertexArray(vao);
+
+        glUniformMatrix4fv(model_location, 1, GL_TRUE, model1);
+        glDrawElements(GL_TRIANGLES,
+                       static_cast<GLsizei>(bunny.indices.size()),
+                       GL_UNSIGNED_INT,
+                       nullptr);
+
+        glUniformMatrix4fv(model_location, 1, GL_TRUE, model2);
+        glDrawElements(GL_TRIANGLES,
+                       static_cast<GLsizei>(bunny.indices.size()),
+                       GL_UNSIGNED_INT,
+                       nullptr);
+
+        glUniformMatrix4fv(model_location, 1, GL_TRUE, model3);
+        glDrawElements(GL_TRIANGLES,
+                       static_cast<GLsizei>(bunny.indices.size()),
+                       GL_UNSIGNED_INT,
+                       nullptr);
 
         SDL_GL_SwapWindow(window);
     }

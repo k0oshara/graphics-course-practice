@@ -41,13 +41,16 @@ uniform mat4 projection;
 
 layout (location = 0) in vec3 in_position;
 layout (location = 1) in vec3 in_normal;
+layout (location = 2) in vec2 in_texcoord;
 
 out vec3 normal;
+out vec2 texcoord;
 
 void main()
 {
     gl_Position = projection * viewmodel * vec4(in_position, 1.0);
     normal = mat3(viewmodel) * in_normal;
+    texcoord = in_texcoord;
 }
 )";
 
@@ -55,13 +58,17 @@ const char fragment_shader_source[] =
 R"(#version 330 core
 
 in vec3 normal;
+in vec2 texcoord;
 
 layout (location = 0) out vec4 out_color;
+uniform sampler2D texture_sampler;
+uniform float time;
 
 void main()
 {
     float lightness = 0.5 + 0.5 * dot(normalize(normal), normalize(vec3(1.0, 2.0, 3.0)));
-    vec3 albedo = vec3(1.0);
+    vec2 animated_texcoord = texcoord + vec2(time * 0.3, 0.0);
+    vec3 albedo = texture(texture_sampler, animated_texcoord).rgb;
     out_color = vec4(lightness * albedo, 1.0);
 }
 )";
@@ -151,10 +158,97 @@ int main() try
 
     GLuint viewmodel_location = glGetUniformLocation(program, "viewmodel");
     GLuint projection_location = glGetUniformLocation(program, "projection");
+    GLuint texture_location = glGetUniformLocation(program, "texture_sampler");
+    GLuint time_location = glGetUniformLocation(program, "time");
 
     std::string project_root = PROJECT_ROOT;
     std::string cow_texture_path = project_root + "/cow.png";
+
+    GLuint texture_chess = 0;
+    glGenTextures(1, &texture_chess);
+    glBindTexture(GL_TEXTURE_2D, texture_chess);
+
+    // glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST_MIPMAP_NEAREST);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+
+    const int size = 1024;
+    std::vector<std::uint32_t> pixels(size * size);
+
+    for (int y = 0; y < size; ++y) {
+        for (int x = 0; x < size; ++x) {
+            bool is_black = ((x / 1) + (y / 1)) % 2 == 0;
+            pixels[y * size + x] = is_black ? 0xFF000000u : 0xFFFFFFFFu;
+        }
+    }
+
+    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, size, size, 0, GL_RGBA, GL_UNSIGNED_BYTE, pixels.data());
+
+    glGenerateMipmap(GL_TEXTURE_2D);
+
+    int level1_size = size / 2;
+    std::vector<std::uint32_t> level1_pixels(level1_size * level1_size, 0xFFFF0000u);
+    glTexImage2D(GL_TEXTURE_2D, 1, GL_RGBA8, level1_size, level1_size, 0, GL_RGBA, GL_UNSIGNED_BYTE, level1_pixels.data());
+
+    int level2_size = size / 4;
+    std::vector<std::uint32_t> level2_pixels(level2_size * level2_size, 0xFF00FF00u);
+    glTexImage2D(GL_TEXTURE_2D, 2, GL_RGBA8, level2_size, level2_size, 0, GL_RGBA, GL_UNSIGNED_BYTE, level2_pixels.data());
+
+    int level3_size = size / 8;
+    std::vector<std::uint32_t> level3_pixels(level3_size * level3_size, 0xFF0000FFu);
+    glTexImage2D(GL_TEXTURE_2D, 3, GL_RGBA8, level3_size, level3_size, 0, GL_RGBA, GL_UNSIGNED_BYTE, level3_pixels.data());
+
+    glBindTexture(GL_TEXTURE_2D, 0);
+
+    GLuint texture_cow= 0;
+    glGenTextures(1, &texture_cow);
+    glBindTexture(GL_TEXTURE_2D, texture_cow);
+
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST_MIPMAP_LINEAR);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+
+    int width_img, height_img, channels;
+    unsigned char* data = stbi_load(cow_texture_path.c_str(), &width_img, &height_img, &channels, 4);
+    if (!data) throw std::runtime_error("Failed to load texture: " + cow_texture_path);
+
+    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, width_img, height_img, 0, GL_RGBA, GL_UNSIGNED_BYTE, data);
+
+    glGenerateMipmap(GL_TEXTURE_2D);
+
+    stbi_image_free(data);
+
+    glBindTexture(GL_TEXTURE_2D, 0);
+
     obj_data cow = parse_obj(project_root + "/cow.obj");
+
+    GLuint vao = 0, vbo = 0, ebo = 0;
+    glGenVertexArrays(1, &vao);
+    glGenBuffers(1, &vbo);
+    glGenBuffers(1, &ebo);
+
+    glBindVertexArray(vao);
+
+    glBindBuffer(GL_ARRAY_BUFFER, vbo);
+    glBufferData(GL_ARRAY_BUFFER, cow.vertices.size() * sizeof(obj_data::vertex), cow.vertices.data(), GL_STATIC_DRAW);
+
+    glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, ebo);
+    glBufferData(GL_ELEMENT_ARRAY_BUFFER, cow.indices.size() * sizeof(std::uint32_t), cow.indices.data(), GL_STATIC_DRAW);
+
+    constexpr GLsizei stride = sizeof(obj_data::vertex);
+    const void* pos_off = reinterpret_cast<void*>(offsetof(obj_data::vertex, position));
+    const void* norm_off = reinterpret_cast<void*>(offsetof(obj_data::vertex, normal));
+    const void* tex_off = reinterpret_cast<void*>(offsetof(obj_data::vertex, texcoord));
+
+    glEnableVertexAttribArray(0);
+    glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, stride, pos_off);
+
+    glEnableVertexAttribArray(1);
+    glVertexAttribPointer(1, 3, GL_FLOAT, GL_FALSE, stride, norm_off);
+
+    glEnableVertexAttribArray(2);
+    glVertexAttribPointer(2, 2, GL_FLOAT, GL_FALSE, stride, tex_off);
+
+    glBindVertexArray(0);
 
     auto last_frame_start = std::chrono::high_resolution_clock::now();
 
@@ -230,6 +324,22 @@ int main() try
         glUseProgram(program);
         glUniformMatrix4fv(viewmodel_location, 1, GL_TRUE, viewmodel);
         glUniformMatrix4fv(projection_location, 1, GL_TRUE, projection);
+        glUniform1f(time_location, time);
+
+        static int current_texture = 0;
+
+        glActiveTexture(GL_TEXTURE0);
+        glBindTexture(GL_TEXTURE_2D, texture_chess);
+        // glUniform1i(texture_location, 0);
+
+        glActiveTexture(GL_TEXTURE1);
+        glBindTexture(GL_TEXTURE_2D, texture_cow);
+        glUniform1i(texture_location, 1);
+
+        glBindVertexArray(vao);
+        glUniform1f(time_location, time);
+        glDrawElements(GL_TRIANGLES, static_cast<GLsizei>(cow.indices.size()), GL_UNSIGNED_INT, nullptr);
+        glBindVertexArray(0);
 
         SDL_GL_SwapWindow(window);
     }

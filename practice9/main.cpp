@@ -189,6 +189,60 @@ void main()
 }
 )";
 
+const char blur_vertex_shader_source[] =
+R"(#version 330 core
+
+vec2 positions[6] = vec2[6](
+    vec2(-1.0, -1.0),
+    vec2( 1.0, -1.0),
+    vec2( 1.0,  1.0),
+    vec2(-1.0, -1.0),
+    vec2( 1.0,  1.0),
+    vec2(-1.0,  1.0)
+);
+
+out vec2 texcoord;
+
+void main()
+{
+    vec2 pos = positions[gl_VertexID];
+    gl_Position = vec4(pos, 0.0, 1.0);
+    texcoord = pos * 0.5 + 0.5;
+}
+)";
+
+const char blur_fragment_shader_source[] =
+R"(#version 330 core
+
+uniform sampler2D input_map;
+uniform float texel_size;
+uniform bool horizontal;
+
+in vec2 texcoord;
+out vec4 out_color;
+
+void main()
+{
+    const float kernel[5] = float[]( 0.06136, 0.24477, 0.38774, 0.24477, 0.06136 );
+
+    vec2 accum = vec2(0.0);
+    if (horizontal) {
+        for (int i = -2; i <= 2; ++i) {
+            vec2 uv = texcoord + vec2(texel_size * float(i), 0.0);
+            uv = clamp(uv, vec2(0.0), vec2(1.0));
+            accum += texture(input_map, uv).rg * kernel[i + 2];
+        }
+    } else {
+        for (int i = -2; i <= 2; ++i) {
+            vec2 uv = texcoord + vec2(0.0, texel_size * float(i));
+            uv = clamp(uv, vec2(0.0), vec2(1.0));
+            accum += texture(input_map, uv).rg * kernel[i + 2];
+        }
+    }
+    out_color = vec4(accum, 0.0, 0.0);
+}
+)";
+
 GLuint create_shader(GLenum type, const char * source)
 {
     GLuint result = glCreateShader(type);
@@ -300,6 +354,16 @@ int main() try
     GLuint shadow_model_location = glGetUniformLocation(shadow_program, "model");
     GLuint shadow_transform_location = glGetUniformLocation(shadow_program, "transform");
 
+    auto blur_vertex_shader = create_shader(GL_VERTEX_SHADER, blur_vertex_shader_source);
+    auto blur_fragment_shader = create_shader(GL_FRAGMENT_SHADER, blur_fragment_shader_source);
+    auto blur_program = create_program(blur_vertex_shader, blur_fragment_shader);
+    GLuint blur_input_location = glGetUniformLocation(blur_program, "input_map");
+    GLuint blur_texel_size_location = glGetUniformLocation(blur_program, "texel_size");
+    GLuint blur_horizontal_location = glGetUniformLocation(blur_program, "horizontal");
+
+    glUseProgram(blur_program);
+    glUniform1i(blur_input_location, 0);
+
     std::string project_root = PROJECT_ROOT;
     std::string scene_path = project_root + "/bunny.obj";
     obj_data scene = parse_obj(scene_path);
@@ -356,10 +420,49 @@ int main() try
     // glFramebufferTexture(GL_DRAW_FRAMEBUFFER, GL_DEPTH_ATTACHMENT, shadow_map, 0);
     glFramebufferTexture2D(GL_DRAW_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, shadow_map, 0);
     glFramebufferRenderbuffer(GL_DRAW_FRAMEBUFFER, GL_DEPTH_ATTACHMENT, GL_RENDERBUFFER, shadow_depth_rb);
-
+    GLenum draw_buffers[] = {GL_COLOR_ATTACHMENT0};
+    glDrawBuffers(1, draw_buffers);
     if (glCheckFramebufferStatus(GL_DRAW_FRAMEBUFFER) != GL_FRAMEBUFFER_COMPLETE)
         throw std::runtime_error("Incomplete framebuffer!");
     glBindFramebuffer(GL_DRAW_FRAMEBUFFER, 0);
+
+    GLuint temp_blurred_shadow_map;
+    glGenTextures(1, &temp_blurred_shadow_map);
+    glBindTexture(GL_TEXTURE_2D, temp_blurred_shadow_map);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+    glTexImage2D(GL_TEXTURE_2D, 0, GL_RG32F, shadow_map_resolution, shadow_map_resolution, 0, GL_RG, GL_FLOAT, nullptr);
+
+    GLuint blurred_shadow_map;
+    glGenTextures(1, &blurred_shadow_map);
+    glBindTexture(GL_TEXTURE_2D, blurred_shadow_map);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+    glTexImage2D(GL_TEXTURE_2D, 0, GL_RG32F, shadow_map_resolution, shadow_map_resolution, 0, GL_RG, GL_FLOAT, nullptr);
+
+    GLuint blur_fbo_horizontal;
+    glGenFramebuffers(1, &blur_fbo_horizontal);
+    glBindFramebuffer(GL_DRAW_FRAMEBUFFER, blur_fbo_horizontal);
+    glFramebufferTexture2D(GL_DRAW_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, temp_blurred_shadow_map, 0);
+    glDrawBuffers(1, draw_buffers);
+    if (glCheckFramebufferStatus(GL_DRAW_FRAMEBUFFER) != GL_FRAMEBUFFER_COMPLETE)
+        throw std::runtime_error("Horizontal blur FBO incomplete!");
+
+    GLuint blur_fbo_vertical;
+    glGenFramebuffers(1, &blur_fbo_vertical);
+    glBindFramebuffer(GL_DRAW_FRAMEBUFFER, blur_fbo_vertical);
+    glFramebufferTexture2D(GL_DRAW_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, blurred_shadow_map, 0);
+    glDrawBuffers(1, draw_buffers);
+    if (glCheckFramebufferStatus(GL_DRAW_FRAMEBUFFER) != GL_FRAMEBUFFER_COMPLETE)
+        throw std::runtime_error("Vertical blur FBO incomplete!");
+
+    glBindFramebuffer(GL_DRAW_FRAMEBUFFER, 0);
+    glUseProgram(blur_program);
+    glUniform1f(blur_texel_size_location, 1.0f / shadow_map_resolution);
 
     auto last_frame_start = std::chrono::high_resolution_clock::now();
 
@@ -493,6 +596,24 @@ int main() try
         glBindVertexArray(vao);
         glDrawElements(GL_TRIANGLES, scene.indices.size(), GL_UNSIGNED_INT, nullptr);
 
+        glBindFramebuffer(GL_DRAW_FRAMEBUFFER, blur_fbo_horizontal);
+        glViewport(0, 0, shadow_map_resolution, shadow_map_resolution);
+        glClear(GL_COLOR_BUFFER_BIT);
+        glDisable(GL_DEPTH_TEST);
+        glUseProgram(blur_program);
+        glUniform1i(blur_horizontal_location, true);
+        glActiveTexture(GL_TEXTURE0);
+        glBindTexture(GL_TEXTURE_2D, shadow_map);
+        glBindVertexArray(debug_vao);
+        glDrawArrays(GL_TRIANGLES, 0, 6);
+
+        glBindFramebuffer(GL_DRAW_FRAMEBUFFER, blur_fbo_vertical);
+        glViewport(0, 0, shadow_map_resolution, shadow_map_resolution);
+        glClear(GL_COLOR_BUFFER_BIT);
+        glUniform1i(blur_horizontal_location, false);
+        glBindTexture(GL_TEXTURE_2D, temp_blurred_shadow_map);
+        glDrawArrays(GL_TRIANGLES, 0, 6);
+
         // glBindTexture(GL_TEXTURE_2D, shadow_map);
         // glGenerateMipmap(GL_TEXTURE_2D);
 
@@ -519,7 +640,8 @@ int main() try
         glm::mat4 projection = glm::mat4(1.f);
         projection = glm::perspective(glm::pi<float>() / 2.f, (1.f * width) / height, near, far);
 
-        glBindTexture(GL_TEXTURE_2D, shadow_map);
+        glActiveTexture(GL_TEXTURE0);
+        glBindTexture(GL_TEXTURE_2D, blurred_shadow_map);
 
         glUseProgram(program);
         glUniformMatrix4fv(model_location, 1, GL_FALSE, reinterpret_cast<float *>(&model));
@@ -535,7 +657,7 @@ int main() try
         glDrawElements(GL_TRIANGLES, scene.indices.size(), GL_UNSIGNED_INT, nullptr);
 
         glUseProgram(debug_program);
-        glBindTexture(GL_TEXTURE_2D, shadow_map);
+        glBindTexture(GL_TEXTURE_2D, blurred_shadow_map);
         glBindVertexArray(debug_vao);
         glDrawArrays(GL_TRIANGLES, 0, 6);
 

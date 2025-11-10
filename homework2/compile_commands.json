@@ -1,0 +1,8 @@
+[
+{
+  "directory": "/home/maks/Documents/graphics-course-practice/homework2/build",
+  "command": "/usr/bin/c++ -DPROJECT_ROOT=\\\"/home/maks/Documents/graphics-course-practice/homework2\\\" -I/home/maks/Documents/graphics-course-practice/homework2/include -I/home/maks/Documents/graphics-course-practice/homework2 -std=gnu++20 -o CMakeFiles/homework2.dir/main.cpp.o -c /home/maks/Documents/graphics-course-practice/homework2/main.cpp",
+  "file": "/home/maks/Documents/graphics-course-practice/homework2/main.cpp",
+  "output": "CMakeFiles/homework2.dir/main.cpp.o"
+}
+]

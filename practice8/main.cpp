@@ -96,13 +96,10 @@ vec3 specular(vec3 direction) {
     return albedo * pow(max(0.0, dot(reflected_direction, view_direction)), power);
 }
 
-vec3 phong(vec3 direction) {
-    return diffuse(direction) + specular(direction);
-}
-
 void main()
 {
     float ambient_light = 0.2;
+    float shadow_factor = 1.0;
 
     vec4 shadow_ndc = shadow_projection * vec4(position, 1.0);
 
@@ -142,15 +139,10 @@ void main()
             }
         }
 
-        shadow /= total_weight;
-
-        if (shadow < 0.5) {
-            out_color = vec4(albedo * ambient_light, 1.0);
-            return;
-        }
+        shadow_factor = clamp(shadow / total_weight, 0.0, 1.0);
     }
 
-    vec3 color = albedo * ambient_light + sun_color * phong(sun_direction);
+    vec3 color = albedo * ambient_light + sun_color * (diffuse(sun_direction) * shadow_factor + specular(sun_direction));
     out_color = vec4(color, 1.0);
 }
 )";

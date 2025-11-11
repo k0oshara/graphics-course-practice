@@ -90,14 +90,17 @@ layout (location = 0) out vec4 out_color;
 
 vec3 diffuse(vec3 direction)
 {
-    return albedo * max(0.0, dot(normal, direction));
+    vec3 N = normalize(normal);
+    return albedo * max(0.0, dot(N, direction));
 }
 
 vec3 specular(vec3 direction)
 {
+    vec3 N = normalize(normal);
     vec3 view_direction = normalize(camera_position - position);
-    vec3 reflected = reflect(-direction, normal);
-    float power = 1.0 / roughness;
+    vec3 reflected = reflect(-direction, N);
+    float r = clamp(roughness, 0.02, 1.0);
+    float power = glossiness * (1.0 / r - 1.0);
     return glossiness * albedo * pow(max(0.0, dot(reflected, view_direction)), power);
 }
 

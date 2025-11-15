@@ -76,6 +76,8 @@ uniform vec3 light_direction;
 uniform vec3 camera_position;
 
 uniform sampler2D albedo_texture;
+uniform sampler2D normal_texture;
+uniform sampler2D environment_texture;
 
 in vec3 position;
 in vec3 tangent;
@@ -88,13 +90,80 @@ const float PI = 3.141592653589793;
 
 void main()
 {
+    vec3 N = normalize(normal);
+    vec3 T = normalize(tangent);
+    vec3 B = normalize(cross(N, T));
+
+    mat3 tbn = mat3(T, B, N);
+    vec3 normal_map = texture(normal_texture, texcoord).xyz * 2.0 - vec3(1.0);
+    vec3 real_normal = normalize(tbn * normal_map);
+
+    // vec3 albedo = real_normal * 0.5 + vec3(0.5);
+    // vec3 albedo = N * 0.5 + vec3(0.5);
+    // vec3 albedo = texture(normal_texture, texcoord).rgb;
+    // out_color = vec4(albedo, 1.0);
+
+    real_normal = normalize(mix(N, real_normal, 0.5));
+
     float ambient_light = 0.2;
-
-    float lightness = ambient_light + max(0.0, dot(normalize(normal), light_direction));
-
+    float lightness = ambient_light + max(0.0, dot(normalize(real_normal), light_direction));
     vec3 albedo = texture(albedo_texture, texcoord).rgb;
 
-    out_color = vec4(lightness * albedo, 1.0);
+    vec3 view_dir = normalize(camera_position - position);
+    vec3 refl_dir = reflect(-view_dir, real_normal);
+
+    float x = atan(refl_dir.z, refl_dir.x) / PI * 0.5 + 0.5;
+    float y = -atan(refl_dir.y, length(refl_dir.xz)) / PI + 0.5;
+    vec2 env_uv = vec2(x, y);
+
+    vec3 env_color = texture(environment_texture, env_uv).rgb;
+
+    vec3 lit_color = lightness * albedo;
+    vec3 final_color = 0.5 * (lit_color + env_color);
+
+    out_color = vec4(final_color, 1.0);
+    // out_color = vec4(lightness * albedo, 1.0);
+}
+)";
+
+const char env_vertex_shader_source[] =
+R"(#version 330 core
+
+uniform mat4 view_projection_inverse;
+
+layout (location = 0) in vec2 in_position;
+
+out vec3 position;
+
+void main()
+{
+    vec4 ndc = vec4(in_position, 0.0, 1.0);
+    vec4 clip_space = view_projection_inverse * ndc;
+    position = clip_space.xyz / clip_space.w;
+    gl_Position = vec4(in_position, 0.0, 1.0);
+}
+)";
+
+const char env_fragment_shader_source[] =
+R"(#version 330 core
+
+uniform vec3 camera_position;
+uniform sampler2D environment_texture;
+
+in vec3 position;
+
+layout (location = 0) out vec4 out_color;
+
+const float PI = 3.141592653589793;
+
+void main()
+{
+    vec3 dir = normalize(position - camera_position);
+    float x = atan(dir.z, dir.x) / PI * 0.5 + 0.5;
+    float y = -atan(dir.y, length(dir.xz)) / PI + 0.5;
+    vec2 env_uv = vec2(x, y);
+    vec3 env_color = texture(environment_texture, env_uv).rgb;
+    out_color = vec4(env_color, 1.0);
 }
 )";
 
@@ -245,12 +314,21 @@ int main() try
     auto fragment_shader = create_shader(GL_FRAGMENT_SHADER, fragment_shader_source);
     auto program = create_program(vertex_shader, fragment_shader);
 
+    auto env_vertex_shader = create_shader(GL_VERTEX_SHADER, env_vertex_shader_source);
+    auto env_fragment_shader = create_shader(GL_FRAGMENT_SHADER, env_fragment_shader_source);
+    auto env_program = create_program(env_vertex_shader, env_fragment_shader);
+
     GLuint model_location = glGetUniformLocation(program, "model");
     GLuint view_location = glGetUniformLocation(program, "view");
     GLuint projection_location = glGetUniformLocation(program, "projection");
     GLuint light_direction_location = glGetUniformLocation(program, "light_direction");
     GLuint camera_position_location = glGetUniformLocation(program, "camera_position");
     GLuint albedo_texture_location = glGetUniformLocation(program, "albedo_texture");
+    GLuint normal_texture_location = glGetUniformLocation(program, "normal_texture");
+    GLuint environment_texture_location = glGetUniformLocation(program, "environment_texture");
+    GLuint env_view_projection_inverse_location = glGetUniformLocation(env_program, "view_projection_inverse");
+    GLuint env_camera_position_location = glGetUniformLocation(env_program, "camera_position");
+    GLuint env_environment_texture_location = glGetUniformLocation(env_program, "environment_texture");
 
     GLuint sphere_vao, sphere_vbo, sphere_ebo;
     glGenVertexArrays(1, &sphere_vao);
@@ -276,10 +354,27 @@ int main() try
     glEnableVertexAttribArray(2);
     glVertexAttribPointer(2, 3, GL_FLOAT, GL_FALSE, sizeof(vertex), (void *)offsetof(vertex, normal));
     glEnableVertexAttribArray(3);
-    glVertexAttribPointer(3, 3, GL_FLOAT, GL_FALSE, sizeof(vertex), (void *)offsetof(vertex, texcoords));
+    glVertexAttribPointer(3, 2, GL_FLOAT, GL_FALSE, sizeof(vertex), (void *)offsetof(vertex, texcoords));
+
+    GLuint env_vao, env_vbo;
+    glGenVertexArrays(1, &env_vao);
+    glBindVertexArray(env_vao);
+    glGenBuffers(1, &env_vbo);
+    glBindBuffer(GL_ARRAY_BUFFER, env_vbo);
+    float env_quad_vertices[] = {
+        -1.0f, -1.0f,
+         1.0f, -1.0f,
+        -1.0f,  1.0f,
+         1.0f,  1.0f
+    };
+    glBufferData(GL_ARRAY_BUFFER, sizeof(env_quad_vertices), env_quad_vertices, GL_STATIC_DRAW);
+    glEnableVertexAttribArray(0);
+    glVertexAttribPointer(0, 2, GL_FLOAT, GL_FALSE, 2 * sizeof(float), (void*)0);
 
     std::string project_root = PROJECT_ROOT;
     GLuint albedo_texture = load_texture(project_root + "/textures/brick_albedo.jpg");
+    GLuint normal_texture = load_texture(project_root + "/textures/brick_normal.jpg");
+    GLuint environment_texture = load_texture(project_root + "/textures/environment_map.jpg");
 
     auto last_frame_start = std::chrono::high_resolution_clock::now();
 
@@ -354,9 +449,25 @@ int main() try
         glm::mat4 projection = glm::mat4(1.f);
         projection = glm::perspective(glm::pi<float>() / 2.f, (1.f * width) / height, near, far);
 
+        glm::mat4 view_projection = projection * view;
+        glm::mat4 view_projection_inverse = glm::inverse(view_projection);
+
         glm::vec3 light_direction = glm::normalize(glm::vec3(1.f, 2.f, 3.f));
 
         glm::vec3 camera_position = (glm::inverse(view) * glm::vec4(0.f, 0.f, 0.f, 1.f)).xyz();
+
+        glDepthMask(GL_FALSE);
+        glDisable(GL_DEPTH_TEST);
+        glUseProgram(env_program);
+        glUniformMatrix4fv(env_view_projection_inverse_location, 1, GL_FALSE, reinterpret_cast<float *>(&view_projection_inverse));
+        glUniform3fv(env_camera_position_location, 1, reinterpret_cast<float *>(&camera_position));
+        glUniform1i(env_environment_texture_location, 2);
+        glActiveTexture(GL_TEXTURE2);
+        glBindTexture(GL_TEXTURE_2D, environment_texture);
+        glBindVertexArray(env_vao);
+        glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
+        glDepthMask(GL_TRUE);
+        glEnable(GL_DEPTH_TEST);
 
         glUseProgram(program);
         glUniformMatrix4fv(model_location, 1, GL_FALSE, reinterpret_cast<float *>(&model));
@@ -365,9 +476,17 @@ int main() try
         glUniform3fv(light_direction_location, 1, reinterpret_cast<float *>(&light_direction));
         glUniform3fv(camera_position_location, 1, reinterpret_cast<float *>(&camera_position));
         glUniform1i(albedo_texture_location, 0);
+        glUniform1i(normal_texture_location, 1);
+        glUniform1i(environment_texture_location, 2);
 
         glActiveTexture(GL_TEXTURE0);
         glBindTexture(GL_TEXTURE_2D, albedo_texture);
+
+        glActiveTexture(GL_TEXTURE1);
+        glBindTexture(GL_TEXTURE_2D, normal_texture);
+
+        glActiveTexture(GL_TEXTURE2);
+        glBindTexture(GL_TEXTURE_2D, environment_texture);
 
         glBindVertexArray(sphere_vao);
         glDrawElements(GL_TRIANGLES, sphere_index_count, GL_UNSIGNED_INT, nullptr);

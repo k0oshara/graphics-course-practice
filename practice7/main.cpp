@@ -100,7 +100,7 @@ vec3 specular(vec3 direction)
     vec3 view_direction = normalize(camera_position - position);
     vec3 reflected = reflect(-direction, N);
     float r = clamp(roughness, 0.02, 1.0);
-    float power = glossiness * (1.0 / r - 1.0);
+    float power = 1.0 / (r * r) - 1.0;
     return glossiness * albedo * pow(max(0.0, dot(reflected, view_direction)), power);
 }
 

@@ -142,7 +142,7 @@ void main()
         shadow_factor = clamp(shadow / total_weight, 0.0, 1.0);
     }
 
-    vec3 color = albedo * ambient_light + sun_color * (diffuse(sun_direction) * shadow_factor + specular(sun_direction));
+    vec3 color = albedo * ambient_light + sun_color * ((diffuse(sun_direction) + specular(sun_direction)) * shadow_factor);
     out_color = vec4(color, 1.0);
 }
 )";

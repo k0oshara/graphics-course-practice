@@ -52,19 +52,36 @@ uniform mat4 model;
 uniform mat4 view;
 uniform mat4 projection;
 
+uniform mat4x3 bones[100];
+
 layout (location = 0) in vec3 in_position;
 layout (location = 1) in vec3 in_normal;
 layout (location = 2) in vec2 in_texcoord;
+layout (location = 3) in ivec4 in_joints;
+layout (location = 4) in vec4  in_weights;
 
 out vec3 normal;
 out vec2 texcoord;
+out vec4 weights;
 
 void main()
 {
 
-    gl_Position = projection * view * model * vec4(in_position, 1.0);
-    normal = mat3(model) * in_normal;
+    mat4x3 average =
+        bones[in_joints.x] * in_weights.x +
+        bones[in_joints.y] * in_weights.y +
+        bones[in_joints.z] * in_weights.z +
+        bones[in_joints.w] * in_weights.w;
+
+    vec4 skinned_pos = mat4(average) * vec4(in_position, 1.0);
+    vec3 skinned_nor = mat3(average) * in_normal;
+
+    // gl_Position = projection * view * model * vec4(in_position, 1.0);
+    // normal = mat3(model) * in_normal;
+    gl_Position = projection * view * model * skinned_pos;
+    normal = mat3(model) * skinned_nor;
     texcoord = in_texcoord;
+    weights = in_weights;
 }
 )";
 
@@ -81,6 +98,7 @@ layout (location = 0) out vec4 out_color;
 
 in vec3 normal;
 in vec2 texcoord;
+in vec4 weights;
 
 void main()
 {
@@ -95,6 +113,7 @@ void main()
     float diffuse = max(0.0, dot(normalize(normal), light_direction));
 
     out_color = vec4(albedo_color.rgb * (ambient + diffuse), albedo_color.a);
+    // out_color = vec4(weights.rgb, 1.0);
 }
 )";
 
@@ -186,6 +205,7 @@ int main() try
     GLuint color_location = glGetUniformLocation(program, "color");
     GLuint use_texture_location = glGetUniformLocation(program, "use_texture");
     GLuint light_direction_location = glGetUniformLocation(program, "light_direction");
+    GLuint bones_location = glGetUniformLocation(program, "bones");
 
     const std::string project_root = PROJECT_ROOT;
     const std::string model_path = project_root + "/dancing/dancing.gltf";
@@ -349,11 +369,18 @@ int main() try
 
         glm::vec3 light_direction = glm::normalize(glm::vec3(1.f, 2.f, 3.f));
 
+        float scale = 0.75f + std::cos(time) * 0.25f;
+        std::vector<glm::mat4x3> bone_matrices(input_model.bones.size(), glm::mat4x3(scale));
+
         glUseProgram(program);
         glUniformMatrix4fv(model_location, 1, GL_FALSE, reinterpret_cast<float *>(&model));
         glUniformMatrix4fv(view_location, 1, GL_FALSE, reinterpret_cast<float *>(&view));
         glUniformMatrix4fv(projection_location, 1, GL_FALSE, reinterpret_cast<float *>(&projection));
         glUniform3fv(light_direction_location, 1, reinterpret_cast<float *>(&light_direction));
+
+        GLsizei bones_count = (GLsizei)bone_matrices.size();
+        if (bones_count > 100) bones_count = 100;
+        glUniformMatrix4x3fv(bones_location, bones_count, GL_FALSE, reinterpret_cast<const float *>(bone_matrices.data()));
 
         auto draw_meshes = [&](bool transparent)
         {

@@ -16,6 +16,10 @@
 #include <random>
 #include <map>
 #include <cmath>
+#include <filesystem>
+#include <cassert>
+#include <array>
+#include <algorithm>
 
 #include <glm/vec3.hpp>
 #include <glm/mat4x4.hpp>
@@ -24,6 +28,7 @@
 #include <glm/ext/scalar_constants.hpp>
 #include <glm/gtx/quaternion.hpp>
 #include <glm/gtx/string_cast.hpp>
+#include <glm/geometric.hpp>
 
 #include "gltf_loader.hpp"
 #include "stb_image.h"
@@ -56,13 +61,16 @@ uniform mat4 projection;
 layout (location = 0) in vec3 in_position;
 layout (location = 1) in vec3 in_normal;
 layout (location = 2) in vec2 in_texcoord;
+layout (location = 3) in vec3 in_instance_position;
 
 out vec3 normal;
 out vec2 texcoord;
 
 void main()
 {
-    gl_Position = projection * view * model * vec4(in_position, 1.0);
+    vec3 pos = in_position + in_instance_position;
+    gl_Position = projection * view * model * vec4(pos, 1.0);
+    // gl_Position = projection * view * model * vec4(in_position, 1.0);
     normal = mat3(model) * in_normal;
     texcoord = in_texcoord;
 }
@@ -140,7 +148,7 @@ int main() try
     SDL_GL_SetAttribute(SDL_GL_CONTEXT_PROFILE_MASK, SDL_GL_CONTEXT_PROFILE_CORE);
     SDL_GL_SetAttribute(SDL_GL_DOUBLEBUFFER, 1);
     SDL_GL_SetAttribute(SDL_GL_MULTISAMPLEBUFFERS, 1);
-    SDL_GL_SetAttribute(SDL_GL_MULTISAMPLESAMPLES, 16);
+    SDL_GL_SetAttribute(SDL_GL_MULTISAMPLESAMPLES, 8);
     SDL_GL_SetAttribute(SDL_GL_RED_SIZE, 8);
     SDL_GL_SetAttribute(SDL_GL_GREEN_SIZE, 8);
     SDL_GL_SetAttribute(SDL_GL_BLUE_SIZE, 8);
@@ -185,6 +193,11 @@ int main() try
     const std::string model_path = project_root + "/bunny/bunny.gltf";
 
     auto const input_model = load_gltf(model_path);
+
+    const int lod_count = std::min(6, static_cast<int>(input_model.meshes.size()));
+    if (lod_count <= 0)
+        throw std::runtime_error("Model has no meshes for LOD rendering");
+
     GLuint vbo;
     glGenBuffers(1, &vbo);
     glBindBuffer(GL_ARRAY_BUFFER, vbo);
@@ -213,6 +226,33 @@ int main() try
         vaos.push_back(vao);
     }
 
+    // std::vector<glm::vec3> instance_offsets;
+    // instance_offsets.reserve(32 * 32);
+    // for (int x = -16; x < 16; ++x)
+    //     for (int z = -16; z < 16; ++z)
+    //         instance_offsets.push_back(glm::vec3((float)x, 0.f, (float)z));
+
+    constexpr int GRID = 32;
+    constexpr int MAX_INSTANCES = GRID*GRID;
+    std::array<std::vector<glm::vec3>, 6> lod_instances;
+    for (int i = 0; i < 6; ++i)
+        lod_instances[i].reserve(MAX_INSTANCES);
+
+    GLuint instance_vbo = 0;
+    glGenBuffers(1, &instance_vbo);
+    glBindBuffer(GL_ARRAY_BUFFER, instance_vbo);
+    // glBufferData(GL_ARRAY_BUFFER, instance_offsets.size() * sizeof(glm::vec3), instance_offsets.data(), GL_STATIC_DRAW);
+    glBufferData(GL_ARRAY_BUFFER, MAX_INSTANCES * sizeof(glm::vec3), nullptr, GL_DYNAMIC_DRAW);
+
+    for (GLuint vao : vaos)
+    {
+        glBindVertexArray(vao);
+        glBindBuffer(GL_ARRAY_BUFFER, instance_vbo);
+        glEnableVertexAttribArray(3);
+        glVertexAttribPointer(3, 3, GL_FLOAT, GL_FALSE, sizeof(glm::vec3), reinterpret_cast<void *>(0));
+        glVertexAttribDivisor(3, 1);
+    }
+
     GLuint texture;
     {
         auto const & mesh = input_model.meshes[0];
@@ -233,6 +273,8 @@ int main() try
         stbi_image_free(data);
     }
 
+    auto const & mesh0 = input_model.meshes[0];
+
     auto last_frame_start = std::chrono::high_resolution_clock::now();
 
     float time = 0.f;
@@ -243,6 +285,13 @@ int main() try
     float camera_rotation = 0.f;
 
     bool paused = false;
+
+    std::vector<GLuint> time_query_ids;
+    std::vector<bool> time_query_is_free;
+
+    float drawn_log_timer = 0.f;
+
+    const float lod_step = 4.0f;
 
     bool running = true;
     while (running)
@@ -306,6 +355,20 @@ int main() try
         camera_position += camera_move_forward * glm::vec3(-std::sin(camera_rotation), 0.f, std::cos(camera_rotation));
         camera_position += camera_move_sideways * glm::vec3(std::cos(camera_rotation), 0.f, std::sin(camera_rotation));
 
+        size_t frame_query_index = 0;
+        for (; frame_query_index < time_query_is_free.size(); ++frame_query_index)
+            if (time_query_is_free[frame_query_index])
+                break;
+        if (frame_query_index == time_query_is_free.size())
+        {
+            GLuint q = 0;
+            glGenQueries(1, &q);
+            time_query_ids.push_back(q);
+            time_query_is_free.push_back(true);
+        }
+        time_query_is_free[frame_query_index] = false;
+        glBeginQuery(GL_TIME_ELAPSED, time_query_ids[frame_query_index]);
+
         glClearColor(0.8f, 0.8f, 1.f, 0.f);
         glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
 
@@ -324,7 +387,48 @@ int main() try
 
         glm::mat4 projection = glm::perspective(glm::pi<float>() / 2.f, (1.f * width) / height, near, far);
 
-        glm::vec3 camera_position = (glm::inverse(view) * glm::vec4(0.f, 0.f, 0.f, 1.f)).xyz();
+        // glm::vec3 camera_position = (glm::inverse(view) * glm::vec4(0.f, 0.f, 0.f, 1.f)).xyz();
+
+        frustum view_frustum(projection * view);
+
+        for (int i = 0; i < 6; ++i)
+            lod_instances[i].clear();
+
+        // instance_offsets.clear();
+        for (int x = -16; x < 16; ++x)
+            for (int z = -16; z < 16; ++z)
+            {
+                glm::vec3 off((float)x, 0.f, (float)z);
+
+                aabb box{mesh0.min + off, mesh0.max + off};
+                if (!intersect(view_frustum, box))
+                {
+                    // instance_offsets.push_back(off);
+                    continue;
+                }
+
+                float d = glm::length(camera_position - off);
+                int lod = static_cast<int>(d / lod_step);
+                if (lod < 0) lod = 0;
+                if (lod >= lod_count) lod = lod_count - 1;
+                if (lod > 5) lod = 5;
+                lod_instances[lod].push_back(off);
+            }
+
+        // glBindBuffer(GL_ARRAY_BUFFER, instance_vbo);
+        // glBufferData(GL_ARRAY_BUFFER, 32 * 32 * sizeof(glm::vec3), nullptr, GL_DYNAMIC_DRAW);
+        // if (!instance_offsets.empty())
+            // glBufferSubData(GL_ARRAY_BUFFER, 0, instance_offsets.size() * sizeof(glm::vec3), instance_offsets.data());
+
+        drawn_log_timer += dt;
+        if (drawn_log_timer >= 0.25f)
+        {
+            size_t total = 0;
+            for (int i = 0; i < lod_count; ++i) total += lod_instances[i].size();
+            // std::cout << "Drawn instances: " << instance_offsets.size() << std::endl;
+            std::cout << "Drawn instances: " << total << std::endl;
+            drawn_log_timer = 0.f;
+        }
 
         glm::vec3 light_direction = glm::normalize(glm::vec3(1.f, 2.f, 3.f));
 
@@ -337,13 +441,63 @@ int main() try
         glBindTexture(GL_TEXTURE_2D, texture);
 
         {
-            auto const & mesh = input_model.meshes[0];
-            glBindVertexArray(vaos[0]);
-            glDrawElements(GL_TRIANGLES, mesh.indices.count, mesh.indices.type, reinterpret_cast<void *>(mesh.indices.view.offset));
+            // auto const & mesh = input_model.meshes[0];
+            // glBindVertexArray(vaos[0]);
+            // for (int x = -16; x < 16; ++x)
+            // for (int z = -16; z < 16; ++z)
+            // {
+                // glm::mat4 model(1.f);
+                // model = glm::translate(model, glm::vec3((float)x, 0.f, (float)z));
+                // glUniformMatrix4fv(model_location, 1, GL_FALSE, reinterpret_cast<float *>(&model));
+                // glDrawElements(GL_TRIANGLES, mesh.indices.count, mesh.indices.type, reinterpret_cast<void *>(mesh.indices.view.offset));
+                // glDrawElementsInstanced(GL_TRIANGLES, static_cast<GLsizei>(mesh.indices.count), mesh.indices.type, reinterpret_cast<void *>(mesh.indices.view.offset), static_cast<GLsizei>(instance_offsets.size()));
+            // }
+            // if (!instance_offsets.empty())
+                // glDrawElementsInstanced(GL_TRIANGLES, static_cast<GLsizei>(mesh0.indices.count), mesh0.indices.type, reinterpret_cast<void *>(mesh0.indices.view.offset), static_cast<GLsizei>(instance_offsets.size()));
+        }
+
+        for (int lod = 0; lod < lod_count; ++lod)
+        {
+            auto const & inst = lod_instances[lod];
+            if (inst.empty())
+                continue;
+
+            glBindBuffer(GL_ARRAY_BUFFER, instance_vbo);
+            glBufferSubData(GL_ARRAY_BUFFER, 0, inst.size() * sizeof(glm::vec3), inst.data());
+
+            auto const & mesh = input_model.meshes[lod];
+            glBindVertexArray(vaos[lod]);
+            glDrawElementsInstanced(GL_TRIANGLES, static_cast<GLsizei>(mesh.indices.count), mesh.indices.type, reinterpret_cast<void *>(mesh.indices.view.offset), static_cast<GLsizei>(inst.size()));
+        }
+
+        glEndQuery(GL_TIME_ELAPSED);
+
+        for (size_t i = 0; i < time_query_ids.size(); ++i)
+        {
+            if (time_query_is_free[i])
+                continue;
+
+            GLint ready = 0;
+            glGetQueryObjectiv(time_query_ids[i], GL_QUERY_RESULT_AVAILABLE, &ready);
+            if (!ready)
+                continue;
+
+            GLuint64 ns = 0;
+            glGetQueryObjectui64v(time_query_ids[i], GL_QUERY_RESULT, &ns);
+            double ms = static_cast<double>(ns) / 1e6;
+            std::cout << "GPU frame: " << ms << " ms" << std::endl;
+
+            time_query_is_free[i] = true;
         }
 
         SDL_GL_SwapWindow(window);
     }
+
+    std::cout << "Timer query objects: " << time_query_ids.size() << std::endl;
+    if (!time_query_ids.empty())
+        glDeleteQueries(static_cast<GLsizei>(time_query_ids.size()), time_query_ids.data());
+
+    glDeleteBuffers(1, &instance_vbo);
 
     SDL_GL_DeleteContext(gl_context);
     SDL_DestroyWindow(window);

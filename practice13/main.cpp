@@ -26,6 +26,7 @@
 #include <glm/ext/scalar_constants.hpp>
 #include <glm/gtx/quaternion.hpp>
 #include <glm/gtx/string_cast.hpp>
+#include <glm/gtx/compatibility.hpp>
 
 #include "gltf_loader.hpp"
 #include "stb_image.h"
@@ -211,6 +212,32 @@ int main() try
     const std::string model_path = project_root + "/dancing/dancing.gltf";
 
     auto const input_model = load_gltf(model_path);
+
+    // auto it_anim = input_model.animations.find("hip-hop");
+    // if (it_anim == input_model.animations.end())
+    //     throw std::runtime_error("Animation 'hip-hop' not found");
+    // auto const & animation = it_anim->second;
+
+    auto it_hip = input_model.animations.find("hip-hop");
+    auto it_rum = input_model.animations.find("rumba");
+    auto it_fla = input_model.animations.find("flair");
+    if (it_hip == input_model.animations.end())
+        throw std::runtime_error("Animation 'hip-hop' not found");
+    if (it_rum == input_model.animations.end())
+        throw std::runtime_error("Animation 'rumba' not found");
+    if (it_fla == input_model.animations.end())
+        throw std::runtime_error("Animation 'flair' not found");
+
+    std::string current_anim_name = "hip-hop";
+    std::string from_anim_name = current_anim_name;
+    std::string to_anim_name = current_anim_name;
+    auto const * current_anim = &it_hip->second;
+    auto const * from_anim = current_anim;
+    auto const * to_anim = current_anim;
+    float blend_elapsed = 0.f;
+    float blend_duration = 0.35f;
+    bool blending = false;
+
     GLuint vbo;
     glGenBuffers(1, &vbo);
     glBindBuffer(GL_ARRAY_BUFFER, vbo);
@@ -317,6 +344,24 @@ int main() try
             break;
         case SDL_KEYUP:
             button_down[event.key.keysym.sym] = false;
+            if (event.key.keysym.sym == SDLK_1 || event.key.keysym.sym == SDLK_2 || event.key.keysym.sym == SDLK_3)
+            {
+                std::string req_name;
+                auto const * req_anim = (decltype(current_anim))nullptr;
+                if (event.key.keysym.sym == SDLK_1) { req_name = "hip-hop"; req_anim = &it_hip->second; }
+                if (event.key.keysym.sym == SDLK_2) { req_name = "rumba";   req_anim = &it_rum->second; }
+                if (event.key.keysym.sym == SDLK_3) { req_name = "flair";   req_anim = &it_fla->second; }
+
+                if (req_anim && req_name != to_anim_name)
+                {
+                    from_anim = blending ? to_anim : current_anim;
+                    from_anim_name = blending ? to_anim_name : current_anim_name;
+                    to_anim = req_anim;
+                    to_anim_name = req_name;
+                    blend_elapsed = 0.f;
+                    blending = true;
+                }
+            }
             break;
         }
 
@@ -345,6 +390,19 @@ int main() try
         if (button_down[SDLK_s])
             view_angle += 2.f * dt;
 
+        if (blending && !paused)
+        {
+            blend_elapsed += dt;
+            if (blend_elapsed >= blend_duration)
+            {
+                blending = false;
+                current_anim = to_anim;
+                current_anim_name = to_anim_name;
+                from_anim = current_anim;
+                from_anim_name = current_anim_name;
+            }
+        }
+
         glClearColor(0.8f, 0.8f, 1.f, 0.f);
         glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
 
@@ -355,7 +413,7 @@ int main() try
         float near = 0.1f;
         float far = 100.f;
 
-        glm::mat4 model = glm::scale(glm::mat4(1.f), glm::vec3(1.f));
+        glm::mat4 model = glm::scale(glm::mat4(1.f), glm::vec3(0.01f));
 
         glm::mat4 view(1.f);
         view = glm::translate(view, {0.f, 0.f, -camera_distance});
@@ -369,8 +427,88 @@ int main() try
 
         glm::vec3 light_direction = glm::normalize(glm::vec3(1.f, 2.f, 3.f));
 
-        float scale = 0.75f + std::cos(time) * 0.25f;
-        std::vector<glm::mat4x3> bone_matrices(input_model.bones.size(), glm::mat4x3(scale));
+        // float scale = 0.75f + std::cos(time) * 0.25f;
+        // std::vector<glm::mat4x3> bone_matrices(input_model.bones.size(), glm::mat4x3(scale));
+
+        // float anim_t = 0.f;
+        // float anim_t = (animation.max_time > 0.f) ? std::fmod(time, animation.max_time) : 0.f;
+
+        float blend_k = 0.f;
+        if (blending)
+            blend_k = (blend_duration > 0.f) ? glm::clamp(blend_elapsed / blend_duration, 0.f, 1.f) : 1.f;
+
+        auto const * a0 = blending ? from_anim : current_anim;
+        auto const * a1 = blending ? to_anim   : current_anim;
+
+        float t0 = (a0->max_time > 0.f) ? std::fmod(time, a0->max_time) : 0.f;
+        float t1 = (a1->max_time > 0.f) ? std::fmod(time, a1->max_time) : 0.f;
+
+        std::vector<glm::mat4> bone_global(input_model.bones.size(), glm::mat4(1.f));
+        std::vector<char> bone_ready(input_model.bones.size(), 0);
+        std::vector<glm::mat4x3> bone_matrices(input_model.bones.size());
+
+        auto sample_trs = [&](decltype(a0) anim, int i, float t, glm::vec3 & tr, glm::quat & rot, glm::vec3 & sca)
+        {
+            tr = glm::vec3(0.f);
+            rot = glm::quat(1.f, 0.f, 0.f, 0.f);
+            sca = glm::vec3(1.f);
+            if (i < (int)anim->bones.size())
+            {
+                tr = anim->bones[i].translation(t);
+                rot = anim->bones[i].rotation(t);
+                sca = anim->bones[i].scale(t);
+            }
+        };
+
+        auto get_global = [&](auto && self, int i) -> glm::mat4
+        {
+            if (bone_ready[i]) return bone_global[i];
+
+            // glm::vec3 t(0.f);
+            // glm::quat r(1.f, 0.f, 0.f, 0.f);
+            // glm::vec3 s(1.f);
+            glm::vec3 t_a, t_b, t;
+            glm::quat r_a, r_b, r;
+            glm::vec3 s_a, s_b, s;
+
+            sample_trs(a0, i, t0, t_a, r_a, s_a);
+            sample_trs(a1, i, t1, t_b, r_b, s_b);
+
+            t = glm::lerp(t_a, t_b, blend_k);
+            r = glm::slerp(r_a, r_b, blend_k);
+            s = glm::lerp(s_a, s_b, blend_k);
+
+            // if (i < (int)animation.bones.size())
+            // {
+            //     t = animation.bones[i].translation(anim_t);
+            //     r = animation.bones[i].rotation(anim_t);
+            //     s = animation.bones[i].scale(anim_t);
+            // }
+
+            glm::mat4 transform =
+                glm::translate(glm::mat4(1.f), t) *
+                glm::toMat4(r) *
+                glm::scale(glm::mat4(1.f), s);
+
+            int parent = input_model.bones[i].parent;
+            if (parent != -1) transform = self(self, parent) * transform;
+
+            bone_global[i] = transform;
+            bone_ready[i] = 1;
+            return transform;
+        };
+
+        for (int i = 0; i < (int)input_model.bones.size(); ++i)
+        {
+            glm::mat4 transform = get_global(get_global, i);
+            bone_matrices[i] = glm::mat4x3(transform);
+        }
+
+        for (int i = 0; i < (int)input_model.bones.size(); ++i)
+        {
+            glm::mat4 final_m = glm::mat4(bone_matrices[i]) * input_model.bones[i].inverse_bind_matrix;
+            bone_matrices[i] = glm::mat4x3(final_m);
+        }
 
         glUseProgram(program);
         glUniformMatrix4fv(model_location, 1, GL_FALSE, reinterpret_cast<float *>(&model));

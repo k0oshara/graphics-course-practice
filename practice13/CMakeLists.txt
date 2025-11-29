@@ -36,4 +36,7 @@ target_link_libraries(${TARGET_NAME} PUBLIC
 	"${SDL2_LIBRARIES}"
 	"${OPENGL_LIBRARIES}"
 )
-target_compile_definitions(${TARGET_NAME} PUBLIC -DPROJECT_ROOT="${PROJECT_ROOT}")
+target_compile_definitions(${TARGET_NAME} PUBLIC
+    -DPROJECT_ROOT="${PROJECT_ROOT}"
+    -DGLM_FORCE_QUAT_DATA_WXYZ
+)
